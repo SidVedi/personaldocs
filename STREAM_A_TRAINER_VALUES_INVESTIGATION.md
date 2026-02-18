@@ -19,19 +19,94 @@ User-reported inconsistencies in trainer feedback values (regret%, EV loss, feed
 
 ---
 
+## System Architecture
+
+### How the Trainer Works
+
+The trainer has two API code paths that feed the same V3 frontend layout. The frontend decides which API to call based on whether `fromStrategiesConfig` is present (strategy page entry) or not (standalone trainer).
+
+```
+┌──────────────────┐         ┌──────────────────────────────┐
+│  Standalone       │         │  Strategy Page Entry          │
+│  Trainer          │         │  (via Train button)           │
+│                   │         │                               │
+│  No config        │         │  fromStrategiesConfig present │
+└────────┬──────────┘         └──────────────┬────────────────┘
+         │                                   │
+         ▼                                   ▼
+┌──────────────────┐         ┌──────────────────────────────┐
+│  V1 API           │         │  V2 API                       │
+│  /trainer/        │         │  /trainer/v2/                  │
+│  generate-next-   │         │  generate-next-hand            │
+│  hand             │         │                               │
+│                   │         │  Uses StrategyTreeNodeResolver │
+│  decode_range()   │         │  decode_or_calculate_range()   │
+│  direct from node │         │  + expand_range()              │
+│                   │         │  + apply_swaps()               │
+└────────┬──────────┘         └──────────────┬────────────────┘
+         │                                   │
+         └──────────────┬────────────────────┘
+                        ▼
+            ┌───────────────────────┐
+            │  _generate_hand_      │
+            │  response()           │
+            │                       │
+            │  EV / regret calc     │
+            │  pot_size adjustment  │
+            └───────────┬───────────┘
+                        │
+                        ▼
+            ┌───────────────────────┐
+            │  Frontend (V3 layout) │
+            │                       │
+            │  FeedbackPanel.tsx     │
+            │  TrainerCenterPanel    │
+            │  TrainerHistoryList   │
+            │  FeedbackActions      │
+            └───────────────────────┘
+```
+
+### Divergence Points
+
+**Backend:** V1 raw-decodes range data; V2 applies resolver transformations (sparse index expansion, action tree walking, isomorphism swaps). Same tree node → potentially different range arrays.
+
+**Frontend:** Backend computes regret using strategy-weighted EV. Frontend (pre-A-4 fix) recalculated regret using only the selected action's EV — fundamentally different formulas.
+
+---
+
 ## Bug Status Dashboard
 
-| ID | Bug | Status | Priority | Investigated | Conclusion |
-|----|-----|--------|----------|--------------|------------|
-| **A-1** | Range array divergence (V1 vs V2) | ✅ CLOSED | P0 → P3 | ✅ 2026-02-16/17 | Latent bug, defensive fix applied |
-| **A-2** | EV decode precision loss | 🔍 PENDING | P1 | ⏸️ Deferred | Not yet investigated |
-| **A-3** | Pot size divergence (V1 vs V2) | ✅ CLOSED | P1 → P3 | ✅ 2026-02-18 | Not a bug — no divergence found |
-| **A-4** | Frontend regret fallback formula | ✅ FIXED | P0 | ✅ 2026-02-10–16 | Fix merged (PR #6144), awaiting deployment |
-| A-5 | EV diff sign inconsistency | 🔍 PENDING | P2 | ⏸️ Deferred | - |
-| A-6 | Regret% negative values | 🔍 PENDING | P2 | ⏸️ Deferred | - |
-| A-7 | Feedback label thresholds | 🔍 PENDING | P2 | ⏸️ Deferred | - |
-| A-8 | Cache staleness | 🔍 PENDING | P2 | ⏸️ Deferred | - |
-| A-9 | Rounding inconsistencies | 🔍 PENDING | P3 | ⏸️ Deferred | - |
+| ID | Bug | Status | Original Priority | Investigated | Conclusion |
+|----|-----|--------|------------------|--------------|------------|
+| **A-4** | Frontend regret fallback formula | ✅ FIXED | P0 (HIGH) | ✅ 2026-02-10–16 | Fix merged (PR #6144), awaiting deployment |
+| **A-1** | Range array divergence (V1 vs V2) | ✅ CLOSED | P0 (HIGH) | ✅ 2026-02-16/17 | Latent bug, defensive fix applied |
+| **A-5** | Board randomization timing (stale ref) | 🔍 PENDING | P1 (HIGH) | ⏸️ Deferred | Postflop-only, trainer is preflop |
+| **A-3** | Pot size divergence (V1 vs V2 configs) | ✅ CLOSED | P1 (MED) | ✅ 2026-02-18 | Not a bug — no divergence found |
+| **A-2** | EV decode precision (pre-decoded vs fresh) | 🔍 PENDING | P2 (MED) | ⏸️ Deferred | Wait for A-4 validation |
+| **A-6** | apply_swaps failures silently ignored | 🔍 PENDING | P2 (HIGH postflop) | ⏸️ Deferred | Postflop-only, coordinate with Akhil |
+| **A-7** | 9s isomorphism bug (suit mapping) | 🔍 PENDING | P2 (HIGH postflop) | ⏸️ Deferred | Postflop-only, coordinate with Akhil |
+| **A-8** | Cache key missing user ID | 🔍 PENDING | P2 (MED) | ⏸️ Deferred | Shared cache edge case |
+| **A-9** | Spins config type safety (`as any`) | 🔍 PENDING | P2 (LOW) | ⏸️ Deferred | Type system polish |
+
+---
+
+## Bug Inventory (Original Analysis)
+
+**Source:** [Stream A Proposal](https://github.com/SidVedi/Hack2024/blob/main/finalReq.md)
+
+| Bug | Risk | Type | Description | Priority | Effort |
+|-----|------|------|-------------|----------|--------|
+| A-4 | HIGH | FE | Frontend regretPercent uses different formula than backend | P0 | 1 day |
+| A-1 | HIGH | BE | Range array decoded via different paths in V1 vs V2 | P0 | 2-3 days |
+| A-5 | HIGH | FE | Board randomization at wrong time with stale ref | P1 | 2 days |
+| A-3 | MED | BE+FE | Pot size differs between V1/V2 configs | P1 | 1-2 days |
+| A-2 | MED | BE | Pre-decoded vs fresh-decoded strategy/EV arrays | P2 | 1 day |
+| A-6 | HIGH (postflop) | BE | apply_swaps failures silently ignored | P2 | 0.5 day |
+| A-7 | HIGH (postflop) | BE | 9s isomorphism bug in suit mapping | P2 | 1 day |
+| A-8 | MED | BE | Cache key missing user role/ID | P2 | 0.5 day |
+| A-9 | LOW | FE | Spins config type safety (`as any` chain) | P2 | 0.5 day |
+
+**Note:** Priorities and risk levels are from original analysis. Actual investigation showed A-1 is latent (not HIGH risk) and A-3 is not a bug (not MED risk).
 
 ---
 
@@ -139,17 +214,124 @@ A-4 is the **primary root cause** of user-reported inconsistencies. Different fo
 
 ---
 
-### ⏸️ A-2: EV Decode Precision Loss
+### ⏸️ A-2: EV Decode Precision (Pre-decoded vs Fresh)
 
-**Status:** PENDING (deferred until A-4 validated)
+**Status:** PENDING (deferred until A-4 validated)  
+**Original Priority:** P2  
+**Type:** Backend  
+**Estimated Effort:** 1 day
 
 **Hypothesis:**  
-EV values decoded from float16 → float64 may lose precision, causing small rounding differences that compound in regret calculations.
+V1 always decompresses EV data fresh (with 2-decimal rounding). V2 may use pre-decoded arrays from the resolver that were rounded at a different stage or not at all. This could cause subtle EV differences between endpoints.
 
 **Plan:**
 - Wait for A-4 fix deployment and validation
 - If inconsistencies persist, investigate EV precision
-- Compare EV values between V1/V2 at decode time
+- Compare float arrays from V1 vs V2 at decode time
+- Standardize rounding if precision differs
+
+---
+
+### ⏸️ A-5: Board Randomization Timing (Stale Ref)
+
+**Status:** PENDING (likely postflop-only issue)  
+**Original Priority:** P1 (HIGH risk)  
+**Type:** Frontend  
+**Estimated Effort:** 2 days
+
+**Hypothesis:**  
+Board cards are randomized at buffer consumption time, not at generation time. EV values were computed for the original board, but the user sees a randomized board. The strategy tree doesn't match what's displayed.
+
+**Why Deferred:**
+- Trainer is currently **preflop-only** (no board cards in preflop spots)
+- Issue only manifests in postflop scenarios
+- A-4 (primary culprit) already addresses most inconsistencies
+
+**Plan (if trainer adds postflop support):**
+1. Move randomization to backend during hand generation
+2. Or: Randomize at buffer fill time; regenerate buffer when settings change
+3. Clean up stale ref logic (`isFirstHandRef`)
+
+---
+
+### ⏸️ A-6: apply_swaps Silent Failures
+
+**Status:** PENDING (coordinate with Akhil before investigation)  
+**Original Priority:** P2 (HIGH for postflop)  
+**Type:** Backend  
+**Estimated Effort:** 0.5 day
+
+**Hypothesis:**  
+Two locations catch `apply_swaps()` failures at DEBUG level and continue with unswapped (wrong) data. Users see wrong combo ordering and EV with zero indication.
+
+**Why Deferred:**
+- Affects **postflop precision strategies** only
+- Trainer is currently preflop-only
+- Akhil is actively working on RTS code that touches swap logic
+
+**Plan (when needed):**
+1. Coordinate with Akhil to avoid conflicts
+2. Escalate swap failures from DEBUG to WARNING
+3. Add monitoring metrics
+4. Consider returning error indicator to frontend
+
+---
+
+### ⏸️ A-7: 9s Isomorphism Bug (Suit Mapping)
+
+**Status:** PENDING (coordinate with Akhil before investigation)  
+**Original Priority:** P2 (HIGH for postflop)  
+**Type:** Backend  
+**Estimated Effort:** 1 day
+
+**Hypothesis:**  
+Suit mapping uses the current round's ISO board (e.g., TURN) instead of the FLOP ISO board. Precision strategies index by flop ISO, so the suit map is wrong on turn/river when 9s appears.
+
+**Why Deferred:**
+- Affects **postflop precision strategies** only (9s on turn/river)
+- Trainer is currently preflop-only
+- Akhil is actively working on RTS/isomorphism code
+
+**Plan (when needed):**
+1. Coordinate with Akhil
+2. Fix to use flop round number for suit mapping
+3. Extend existing tests to verify fix
+
+---
+
+### ⏸️ A-8: Cache Key Missing User ID
+
+**Status:** PENDING  
+**Original Priority:** P2 (MEDIUM)  
+**Type:** Backend  
+**Estimated Effort:** 0.5 day
+
+**Hypothesis:**  
+Cache key includes role hash and path but not user ID. Users with the same role share cache, potentially serving wrong subscription tier data across different users.
+
+**Plan:**
+1. Audit cache key generation logic
+2. Add user ID to cache key (matching `user_role_cache()` decorator pattern)
+3. Deploy during low-traffic window (cache invalidation spike)
+4. Monitor cache hit rate after deployment
+
+---
+
+### ⏸️ A-9: Spins Config Type Safety
+
+**Status:** PENDING  
+**Original Priority:** P2 (LOW)  
+**Type:** Frontend  
+**Estimated Effort:** 0.5 day
+
+**Hypothesis:**  
+Unsafe double `as any` cast when accessing spins config. If config structure changes, trainer silently uses wrong config, potentially causing crashes or wrong behavior.
+
+**Plan:**
+1. Audit existing spins config usage across codebase
+2. Define proper TypeScript interface for spins config structure
+3. Replace `as any` casts with typed access
+4. TypeScript compilation verifies fix
 
 ---
 
@@ -237,23 +419,81 @@ Frontend fallback formula differs from backend
 
 ---
 
+## Execution Strategy (Aligned with Original Proposal)
+
+### Phase 1: Stop the Bleeding (P0) ✅
+
+**Approach:** Fix the bugs causing **every hand** to show wrong values
+
+**Completed:**
+- ✅ **A-4** (P0): Frontend regret fallback — **FIXED**, merged PR #6144, awaiting deployment
+- ✅ **A-1** (P0): Range divergence — **Investigated and defensively fixed**, latent bug protected
+
+**Impact:** These two fixes address the primary root causes of user-reported inconsistencies.
+
+---
+
+### Phase 2: Visible UX Fixes (P1) ⏸️
+
+**Approach:** Fix bugs that affect specific scenarios or workflows
+
+**Status:**
+- ⏸️ **A-5** (P1): Board randomization — Deferred (postflop-only, trainer is preflop)
+- ✅ **A-3** (P1): Pot size alignment — **Investigated**, ruled out as not a bug
+
+**Decision:** Wait for A-4 deployment and user validation before proceeding with P1.
+
+---
+
+### Phase 3: Polish and Tech Debt (P2) ⏸️
+
+**Approach:** Address edge cases, logging, and type safety
+
+**Status:**
+- ⏸️ **A-2** (P2): EV precision — Deferred until A-4 validated
+- ⏸️ **A-6** (P2): apply_swaps logging — Deferred (postflop, coordinate with Akhil)
+- ⏸️ **A-7** (P2): 9s isomorphism — Deferred (postflop, coordinate with Akhil)
+- ⏸️ **A-8** (P2): Cache key isolation — Deferred (low impact edge case)
+- ⏸️ **A-9** (P2): Type safety — Deferred (polish, low risk)
+
+**Decision:** Focus on P0 validation first; only proceed with P2 if issues persist.
+
+---
+
 ## Next Steps
 
 ### Immediate (Week of 2026-02-18)
-1. ✅ Complete A-3 investigation (DONE)
-2. ⏳ Validate A-4 fix in staging/dev environment
-3. ⏳ Deploy A-4 fix to production
-4. ⏳ Monitor user feedback for resolution confirmation
+1. ✅ Complete A-3 investigation (DONE — not a bug)
+2. ⏳ **Deploy A-4 fix to production** (highest priority)
+3. ⏳ Monitor user feedback for 1-2 weeks post-deployment
+4. ⏳ Validate that inconsistencies are resolved
 
-### Short-term (Following Week)
-1. If issues persist after A-4: Investigate A-2 (EV precision)
-2. If issues resolved: Close Stream A investigation
-3. Document final root cause analysis
+### Short-term (Following 2-3 Weeks)
+1. **If issues resolved after A-4**: 
+   - ✅ Close Stream A investigation
+   - ✅ Document final root cause (A-4 was primary culprit)
+   - ✅ Archive P1/P2 bugs as "not needed"
 
-### Long-term
+2. **If issues persist after A-4**:
+   - 🔍 Investigate A-2 (EV precision)
+   - 🔍 Collect new evidence on remaining inconsistencies
+   - 🔍 Re-prioritize P1/P2 bugs based on findings
+
+### Long-term (Backlog)
 - Consider refactoring frontend to always trust backend values (no fallbacks)
 - Add integration tests comparing V1/V2 responses
+- If trainer adds postflop support: Investigate A-5, A-6, A-7
 - Monitor for new inconsistency reports
+
+---
+
+## Coordination Points
+
+| With | When | Topic |
+|------|------|-------|
+| **Akhil** | Before investigating A-6/A-7 | RTS/isomorphism work may conflict with swap/9s fixes |
+| **Priyanka** | During A-5 (if investigated) | `FeedbackActions.tsx` shared between Stream A and B |
+| **Product Team** | After A-4 deployment | User feedback monitoring and issue resolution validation |
 
 ---
 
