@@ -26,7 +26,7 @@ User-reported inconsistencies in trainer feedback values (regret%, EV loss, feed
 | **A-1** | Range array divergence (V1 vs V2) | ✅ CLOSED | P0 → P3 | ✅ 2026-02-16/17 | Latent bug, defensive fix applied |
 | **A-2** | EV decode precision loss | 🔍 PENDING | P1 | ⏸️ Deferred | Not yet investigated |
 | **A-3** | Pot size divergence (V1 vs V2) | ✅ CLOSED | P1 → P3 | ✅ 2026-02-18 | Not a bug — no divergence found |
-| **A-4** | Frontend regret fallback formula | ✅ FIXED | P0 | ✅ 2026-02-17 | Fix implemented in frontend branch |
+| **A-4** | Frontend regret fallback formula | ✅ FIXED | P0 | ✅ 2026-02-10–16 | Fix merged (PR #6144), awaiting deployment |
 | A-5 | EV diff sign inconsistency | 🔍 PENDING | P2 | ⏸️ Deferred | - |
 | A-6 | Regret% negative values | 🔍 PENDING | P2 | ⏸️ Deferred | - |
 | A-7 | Feedback label thresholds | 🔍 PENDING | P2 | ⏸️ Deferred | - |
@@ -95,33 +95,47 @@ Frontend `fromStrategiesConfig` is only used to pre-populate V2 request params, 
 
 ---
 
-## Active/Pending Investigations
+---
 
-### 🔍 A-4: Frontend Regret Fallback Formula
+### ✅ A-4: Frontend Regret Fallback Formula
 
-**Status:** ✅ FIXED (implementation complete, awaiting deployment)
+**Detail Doc:** [`A4_REGRET_FALLBACK_INVESTIGATION.md`](../../GameTrainer-Frontend/docs/A4_REGRET_FALLBACK_INVESTIGATION.md)
 
 **Hypothesis:**  
-Frontend recalculates regret when backend `regretPercent` is missing/null using a different formula:
-- **Frontend:** `(evDiff / potValue) * 100` (simple EV loss as % of pot)
-- **Backend:** `((bestEV - weightedEV) / pot) * 100` (strategy-weighted regret)
+Frontend recalculated regret using a different formula than backend when values were missing, causing inconsistent feedback labels across views.
 
-These formulas produce different results, causing inconsistencies.
+**Investigation:**
+- **Scope:** 7 affected components (trainer, replayer, mobile)
+- **Method:** Code analysis, PR #6144 implementation
+- **Duration:** ~1 week (Feb 10-16, 2026)
 
-**Fix Implemented:**
-- **Frontend branch:** `feature/sv-proto` (or current working branch)
-- **Changes:**
-  - Removed frontend regret calculation fallback
-  - Always trust backend-provided `regretPercent`
-  - Added `getRegretPercent()` utility to validate backend values (returns `null` for invalid)
-  - Debug users see both BE and FE values for comparison
+**Findings:**
+- ✅ **Formula divergence confirmed** — Frontend used simple EV loss, backend used weighted-EV regret
+- ✅ Different formulas → different regret% → different feedback labels (optimal/strong/weak/blunder)
+- ✅ Affected **all user sessions** (not just edge cases)
+- ✅ Impact was widespread: trainer center panel, feedback panel, history list, replayer, mobile
 
-**Next Steps:**
-- ✅ Implementation complete
-- ⏳ Validation testing in progress
-- ⏳ Deployment pending
+**Formula Comparison:**
+- **Backend (Correct):** `((best_EV - weighted_EV) / pot) * 100` — Accounts for mixed strategies
+- **Frontend Fallback (Wrong):** `((best_EV - selected_EV) / pot) * 100` — Assumes pure strategies
 
-**Expected Impact:** HIGH — Should resolve most user-reported inconsistencies
+**Outcome:**
+- **Status:** ✅ FIXED (merged Feb 16, 2026, awaiting production deployment)
+- **PR:** #6144 (18 files, +1375/-292 lines)
+- **Fix:** 
+  - Added `getRegretPercent()` utility for backend value validation
+  - Removed all client-side regret calculations
+  - Show em dash (—) when backend value is invalid instead of recalculating
+  - Debug users see dual BE/FE display for comparison
+- **Tests:** 3 new test files, +391 lines of tests
+- **Impact:** HIGH — Expected to resolve most user-reported inconsistencies
+
+**Key Insight:**  
+A-4 is the **primary root cause** of user-reported inconsistencies. Different formulas affected every hand, while A-1 and A-3 were either latent or non-existent.
+
+---
+
+## Active/Pending Investigations
 
 ---
 
@@ -249,8 +263,8 @@ Frontend fallback formula differs from backend
 |-----|-------------------|----------|--------------|-------|
 | A-1 | 0.5 day | 1 hour | 0.5 hour | ~5 hours |
 | A-3 | 1.5 hours | 0 (no fix needed) | - | ~1.5 hours |
-| A-4 | (frontend team) | (frontend team) | TBD | TBD |
-| **Total** | **~6.5 hours** | **~1 hour** | **TBD** | **~7.5 hours** |
+| A-4 | ~1 week | Included in investigation | Included | ~1 week |
+| **Total** | **~1.5 weeks** | **~1 hour** | **Included** | **~1.5 weeks** |
 
 ---
 
@@ -259,6 +273,7 @@ Frontend fallback formula differs from backend
 ### Detail Documents
 - [A1_RANGE_DIVERGENCE_INVESTIGATION.md](./A1_RANGE_DIVERGENCE_INVESTIGATION.md) — Range array divergence (V1 vs V2)
 - [A3_POT_SIZE_INVESTIGATION.md](./A3_POT_SIZE_INVESTIGATION.md) — Pot size and rake divergence
+- [A4_REGRET_FALLBACK_INVESTIGATION.md](../../GameTrainer-Frontend/docs/A4_REGRET_FALLBACK_INVESTIGATION.md) — Frontend regret fallback formula
 
 ### Related Code
 - `trainer/utils/trainer_helper.py` — Shared pot calculation and regret logic
